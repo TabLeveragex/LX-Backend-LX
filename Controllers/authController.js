@@ -2,7 +2,6 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require("../Models/userModel");
 const { sendWelcomeEmail } = require('../Services/emailService');
-const { isLegitGmailAddress } = require('../Services/gmailAddressService');
 const { clientIp } = require('../Services/captchaService');
 
 const signup = async (req, res) => {
