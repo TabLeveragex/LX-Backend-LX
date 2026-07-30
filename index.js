@@ -37,41 +37,37 @@ logRequiredEnvOnStartup();
 
 // CORS configuration to allow requests from multiple domains, including local dev
 const allowedOrigins = [
-  // 'https://leveragex.onrender.com',  // Old domain
-  // 'https://leveragex.in',            // New domain
-  // 'https://leveragex-frontend.onrender.com',
-  // 'https://leveragex-kuxu.onrender.com',  // 11-jan-2025
-  // 'https://leveragex-9ndu.onrender.com',     // 31-march-2025
-  // 'https://leveragex-4p2t.onrender.com',
-  // 'https://leveragex-oqsf.onrender.com',        // 31-may-2025
-  // 'https://leveragex-rrf8.onrender.com',        // 1-aug-2025
-  // 'https://leveragex-g6ll.onrender.com',        // current frontend (Render)
-  // 'http://localhost:3000', 
-  //  'http://localhost:5173', // 👈 ADD THIS (VERY COMMON)
-  // 'http://127.0.0.1:3000',
-  // 'http://127.0.0.1:5173',
-  // 'https://leveragex-mj3f.onrender.com',
   'https://leveragex.shop',
   'https://www.leveragex.shop',
-  //'http://localhost:3000',
-  // 'http://localhost:3000',
-  // 'http://localhost:5173',
-  // 'http://127.0.0.1:3000',
-  // 'http://127.0.0.1:5173',
-  //'https://leveragex-p56c.onrender.com',
   'https://leveragex-2uvw.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
 ];
+
+// Optional comma-separated extras from Render, e.g. FRONTEND_ORIGINS=https://my-app.onrender.com
+String(process.env.FRONTEND_ORIGINS || process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((v) => v.trim())
+  .filter(Boolean)
+  .forEach((origin) => {
+    if (!allowedOrigins.includes(origin)) {
+      allowedOrigins.push(origin);
+    }
+  });
 
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests from specified origins or requests without origin (like postman)
-    if (allowedOrigins.includes(origin) || !origin) {
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      console.warn(`[CORS] Blocked origin: ${origin}`);
       callback(new Error('Not allowed by CORS'));
     }
   },
-  methods: 'GET,POST,PUT,PATCH,DELETE',
+  methods: 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
   credentials: true,  // Enable credentials if needed for cookies or authentication
   optionsSuccessStatus: 200  // For legacy browser support
 };

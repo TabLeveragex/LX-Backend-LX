@@ -105,7 +105,9 @@ const adminLogin = async (req, res) => {
             ? 'Could not send admin login code: Gmail rejected SMTP credentials. Set a new App Password as SMTP_PASS and SMTP_SERVICE=gmail on Render, then redeploy.'
             : mailResult.kind === 'misconfigured_service'
               ? 'Could not send admin login code: SMTP_SERVICE is invalid. Set SMTP_SERVICE=gmail on Render and redeploy.'
-              : 'Could not send admin login code. Check SMTP_SERVICE=gmail and Gmail App Password on Render, then redeploy.';
+              : mailResult.kind === 'network'
+                ? 'Could not reach Gmail SMTP from the server (timeout). Redeploy the latest backend (IPv4 SMTP fix), and confirm SMTP_PASS on Render has no extra spaces/quotes issues.'
+                : 'Could not send admin login code. Check SMTP_SERVICE=gmail and Gmail App Password on Render, then redeploy.';
       console.error(
         '[AdminLogin] OTP email failed for',
         otpRecipient,
@@ -115,7 +117,11 @@ const adminLogin = async (req, res) => {
         mailResult.kind ? `kind=${mailResult.kind}` : '',
         mailResult.hint || ''
       );
-      return res.status(503).json({ message, success: false });
+      return res.status(503).json({
+        message,
+        success: false,
+        emailErrorKind: mailResult.kind || 'send_failed',
+      });
     }
 
     console.log(

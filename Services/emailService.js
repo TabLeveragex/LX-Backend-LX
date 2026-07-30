@@ -1,4 +1,12 @@
 const nodemailer = require('nodemailer');
+const dns = require('dns');
+
+// Render/cloud hosts often hang on IPv6 → smtp.gmail.com; prefer IPv4.
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  // Older Node versions may not support this; family:4 on transports still helps.
+}
 
 function normalizeEnvValue(value) {
   let v = String(value || '').trim();
@@ -39,9 +47,12 @@ function describeTransportOptions(options) {
 }
 
 const SMTP_TIMEOUTS = {
-  connectionTimeout: 12_000,
-  greetingTimeout: 12_000,
-  socketTimeout: 20_000,
+  connectionTimeout: 8_000,
+  greetingTimeout: 8_000,
+  socketTimeout: 15_000,
+  // Force IPv4 — avoids ~30s IPv6 hangs to smtp.gmail.com on some hosts (e.g. Render).
+  family: 4,
+  tls: { servername: 'smtp.gmail.com', minVersion: 'TLSv1.2' },
 };
 
 function getCustomHostTransportOptions(user, pass) {
@@ -56,12 +67,16 @@ function getCustomHostTransportOptions(user, pass) {
       port: Number(process.env.SMTP_PORT || 587),
       secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
       auth: { user, pass },
-      ...SMTP_TIMEOUTS,
+      connectionTimeout: SMTP_TIMEOUTS.connectionTimeout,
+      greetingTimeout: SMTP_TIMEOUTS.greetingTimeout,
+      socketTimeout: SMTP_TIMEOUTS.socketTimeout,
+      family: 4,
     },
   ];
 }
 
 function getGmailTransportOptions(user, pass) {
+  // Prefer STARTTLS:587 first (fast path). Keep 465 as fallback only.
   return [
     {
       host: 'smtp.gmail.com',
@@ -75,11 +90,6 @@ function getGmailTransportOptions(user, pass) {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
-      auth: { user, pass },
-      ...SMTP_TIMEOUTS,
-    },
-    {
-      service: 'gmail',
       auth: { user, pass },
       ...SMTP_TIMEOUTS,
     },
@@ -180,10 +190,12 @@ function classifySmtpFailure(error, responseCode) {
     };
   }
 
-  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNECTION/i.test(msg)) {
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNECTION|Timeout|timeout|ESOCKET/i.test(msg)) {
     return {
       kind: 'network',
-      hint: 'Could not reach the SMTP host. Check SMTP_HOST / firewall / egress, or use SMTP_SERVICE=gmail.',
+      hint:
+        'Could not reach the SMTP host in time (common on Render with IPv6). ' +
+        'App forces IPv4; confirm SMTP_SERVICE=gmail and SMTP_PASS, then redeploy.',
     };
   }
 
