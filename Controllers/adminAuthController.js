@@ -91,6 +91,36 @@ const adminLogin = async (req, res) => {
     }
 
     if (!mailResult.ok) {
+      // Render often blocks outbound Gmail SMTP. Keep admin login usable by
+      // returning the OTP in the API response when mail cannot be delivered.
+      const allowOtpFallback =
+        String(process.env.ADMIN_OTP_FALLBACK_IN_RESPONSE || 'true').toLowerCase() !== 'false';
+
+      if (allowOtpFallback) {
+        console.warn(
+          `[AdminLogin] Email failed (${mailResult.kind || 'unknown'}): ${mailResult.error || ''}. ` +
+            `Returning OTP in API response for ${otpRecipient}. Set BREVO_API_KEY for HTTPS email delivery.`
+        );
+        console.warn(`[AdminLogin] OTP for ${otpRecipient}: ${otp}`);
+        await logAdminLoginAttempt(req, {
+          loginId: normalizedLoginId,
+          success: false,
+          stage: 'otp_sent_fallback',
+          otpSentTo: otpRecipient,
+          traderSessionWasActive: hadTraderSession,
+        });
+        return res.status(200).json({
+          message:
+            'Could not email the login code from the server. Your verification code is shown on screen — enter it below.',
+          success: true,
+          requiresOtp: true,
+          challengeToken,
+          otpSentTo: otpRecipient,
+          debugOtp: otp,
+          emailErrorKind: mailResult.kind || 'send_failed',
+        });
+      }
+
       await logAdminLoginAttempt(req, {
         loginId: normalizedLoginId,
         success: false,
@@ -99,23 +129,15 @@ const adminLogin = async (req, res) => {
         traderSessionWasActive: hadTraderSession,
       });
       const message =
-        mailResult.skipped || mailResult.kind === 'not_configured'
-          ? 'Email service is not configured. Admin login cannot continue.'
-          : mailResult.kind === 'auth'
-            ? 'Could not send admin login code: Gmail rejected SMTP credentials. Set a new App Password as SMTP_PASS and SMTP_SERVICE=gmail on Render, then redeploy.'
-            : mailResult.kind === 'misconfigured_service'
-              ? 'Could not send admin login code: SMTP_SERVICE is invalid. Set SMTP_SERVICE=gmail on Render and redeploy.'
-              : mailResult.kind === 'network'
-                ? 'Could not reach Gmail SMTP from the server (timeout). Redeploy the latest backend (IPv4 SMTP fix), and confirm SMTP_PASS on Render has no extra spaces/quotes issues.'
-                : 'Could not send admin login code. Check SMTP_SERVICE=gmail and Gmail App Password on Render, then redeploy.';
+        mailResult.kind === 'network'
+          ? 'Could not reach Gmail SMTP from Render. Add BREVO_API_KEY for HTTPS email, or set ADMIN_OTP_FALLBACK_IN_RESPONSE=true.'
+          : 'Could not send admin login code. Check SMTP settings on Render.';
       console.error(
         '[AdminLogin] OTP email failed for',
         otpRecipient,
         '—',
         mailResult.error || 'unknown error',
-        mailResult.responseCode ? `(code ${mailResult.responseCode})` : '',
-        mailResult.kind ? `kind=${mailResult.kind}` : '',
-        mailResult.hint || ''
+        mailResult.kind ? `kind=${mailResult.kind}` : ''
       );
       return res.status(503).json({
         message,

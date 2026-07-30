@@ -279,11 +279,89 @@ async function verifySmtpOnStartup() {
   }
 }
 
+async function sendViaBrevoHttp({ from, to, subject, text, html }) {
+  const apiKey = normalizeEnvValue(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY);
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        'api-key': apiKey,
+      },
+      body: JSON.stringify({
+        sender: { email: from, name: 'LeverageX' },
+        to: [{ email: to }],
+        subject,
+        textContent: text || undefined,
+        htmlContent: html || undefined,
+      }),
+    });
+
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const msg = body?.message || `Brevo HTTP ${response.status}`;
+      console.error('[Email] Brevo send failed:', msg);
+      return { ok: false, error: msg, kind: 'http_provider', transport: 'brevo-http' };
+    }
+
+    console.log(`[Email] Sent via brevo-http to ${to}`);
+    return {
+      ok: true,
+      messageId: body?.messageId || body?.messageId || 'brevo',
+      transport: 'brevo-http',
+    };
+  } catch (error) {
+    console.error('[Email] Brevo send threw:', error.message);
+    return { ok: false, error: error.message, kind: 'network', transport: 'brevo-http' };
+  }
+}
+
+async function sendViaResendHttp({ from, to, subject, text, html }) {
+  const apiKey = normalizeEnvValue(process.env.RESEND_API_KEY);
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [to],
+        subject,
+        text: text || undefined,
+        html: html || undefined,
+      }),
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const msg = body?.message || `Resend HTTP ${response.status}`;
+      console.error('[Email] Resend send failed:', msg);
+      return { ok: false, error: msg, kind: 'http_provider', transport: 'resend-http' };
+    }
+    console.log(`[Email] Sent via resend-http to ${to}`);
+    return { ok: true, messageId: body?.id || 'resend', transport: 'resend-http' };
+  } catch (error) {
+    console.error('[Email] Resend send threw:', error.message);
+    return { ok: false, error: error.message, kind: 'network', transport: 'resend-http' };
+  }
+}
+
 /**
- * Send an email via SMTP (Gmail app password or custom SMTP).
+ * Send an email via SMTP (Gmail app password) with HTTPS provider fallback.
+ * Render often cannot open smtp.gmail.com — BREVO_API_KEY / RESEND_API_KEY use HTTPS:443.
  */
 async function sendEmail({ to, subject, text, html }) {
-  if (!isEmailConfigured()) {
+  if (!isEmailConfigured() && !normalizeEnvValue(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || process.env.RESEND_API_KEY)) {
     const msg = 'SMTP_USER / SMTP_PASS are required but not set';
     console.error('[Email]', msg);
     return {
@@ -291,14 +369,14 @@ async function sendEmail({ to, subject, text, html }) {
       skipped: true,
       error: msg,
       kind: 'not_configured',
-      hint: 'Set SMTP_USER and SMTP_PASS (Gmail App Password) on Render.',
+      hint: 'Set SMTP_USER and SMTP_PASS (Gmail App Password) on Render, or BREVO_API_KEY / RESEND_API_KEY.',
     };
   }
 
-  const from = buildFromAddress();
+  const from = buildFromAddress() || getSmtpUser() || normalizeEnvValue(process.env.EMAIL_FROM).toLowerCase();
   const toAddress = String(to || '').trim().toLowerCase();
   if (!from) {
-    const msg = 'SMTP_USER is missing or invalid';
+    const msg = 'SMTP_USER / EMAIL_FROM is missing or invalid';
     console.error('[Email]', msg);
     return { ok: false, error: msg, kind: 'not_configured', hint: msg };
   }
@@ -308,30 +386,50 @@ async function sendEmail({ to, subject, text, html }) {
     return { ok: false, error: msg, kind: 'invalid_recipient', hint: msg };
   }
 
-  const result = await sendWithFallbackTransports({
-    from,
-    to: toAddress,
-    subject,
-    text,
-    html,
-  });
-
-  if (result.ok) {
-    return { ok: true, messageId: result.messageId, transport: result.transport };
+  // Prefer HTTPS providers first when configured (works on Render when SMTP is blocked).
+  const brevoFirst = await sendViaBrevoHttp({ from, to: toAddress, subject, text, html });
+  if (brevoFirst?.ok) {
+    return { ok: true, messageId: brevoFirst.messageId, transport: brevoFirst.transport };
+  }
+  const resendFirst = await sendViaResendHttp({ from, to: toAddress, subject, text, html });
+  if (resendFirst?.ok) {
+    return { ok: true, messageId: resendFirst.messageId, transport: resendFirst.transport };
   }
 
-  console.error(
-    `[Email] All transports failed for to=${toAddress} from=${from}: ${result.error}` +
-      (result.responseCode ? ` (code ${result.responseCode})` : '') +
-      (result.hint ? ` | ${result.hint}` : '')
-  );
+  if (isEmailConfigured()) {
+    const result = await sendWithFallbackTransports({
+      from,
+      to: toAddress,
+      subject,
+      text,
+      html,
+    });
 
+    if (result.ok) {
+      return { ok: true, messageId: result.messageId, transport: result.transport };
+    }
+
+    console.error(
+      `[Email] All transports failed for to=${toAddress} from=${from}: ${result.error}` +
+        (result.responseCode ? ` (code ${result.responseCode})` : '') +
+        (result.hint ? ` | ${result.hint}` : '')
+    );
+
+    return {
+      ok: false,
+      error: result.error,
+      responseCode: result.responseCode,
+      kind: result.kind,
+      hint: result.hint,
+    };
+  }
+
+  const providerError = brevoFirst || resendFirst;
   return {
     ok: false,
-    error: result.error,
-    responseCode: result.responseCode,
-    kind: result.kind,
-    hint: result.hint,
+    error: providerError?.error || 'No email transport available',
+    kind: providerError?.kind || 'not_configured',
+    hint: 'Set BREVO_API_KEY (recommended on Render) or SMTP_USER/SMTP_PASS.',
   };
 }
 
