@@ -9,7 +9,6 @@ function getMissingEnvVars() {
   const required = [
     'MONGO_CONN',
     'JWT_SECRET',
-    'HCAPTCHA_SECRET_KEY',
     'SMTP_USER',
     'SMTP_PASS',
   ];

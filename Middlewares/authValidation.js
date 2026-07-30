@@ -36,7 +36,10 @@ const adminLoginValidation = (req, res, next) => {
         loginId: Joi.string().min(3).max(100).required(),
         password: Joi.string().min(4).max(100).required(),
         traderSessionWasActive: Joi.boolean().optional(),
-        hcaptchaToken: Joi.string().min(20).max(4096).required(),
+        // Optional leftovers from older clients; ignored by the controller.
+        hcaptchaToken: Joi.string().min(20).max(4096).optional(),
+        recaptchaToken: Joi.string().min(20).max(4096).optional(),
+        captchaToken: Joi.string().min(20).max(4096).optional(),
     });
     const { error } = schema.validate(req.body);
     if (error) {

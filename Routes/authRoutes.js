@@ -26,7 +26,7 @@ router.post('/signup', registrationHandlers);
 router.post('/register', registrationHandlers);
 router.get('/me', ensureAuthenticated, getMe);
 
-router.post('/admin/login', adminLoginValidation, verifyCaptcha, adminLogin);
+router.post('/admin/login', adminLoginValidation, adminLogin);
 router.post('/admin/verify-otp', adminVerifyOtpValidation, adminVerifyOtp);
 router.post('/admin/logout', adminLogout);
 router.get('/admin/me', ensureAdmin, getAdminMe);
