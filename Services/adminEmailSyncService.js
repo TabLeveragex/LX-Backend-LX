@@ -1,13 +1,16 @@
 const Admin = require('../Models/adminModel');
+const bcrypt = require('bcrypt');
 const { isDeliverableEmail } = require('./adminOtpRecipientService');
 
 /**
  * Keep admin login email aligned with ADMIN_EMAIL on Render when env is a real address.
  * Skips placeholders like admin@example.com so they never overwrite a real inbox.
+ * Also re-hashes ADMIN_PASSWORD onto the matched admin when provided.
  */
 async function syncAdminEmailFromEnv() {
   const email = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   const username = String(process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
+  const password = String(process.env.ADMIN_PASSWORD || '').trim();
 
   if (!email) {
     return { updated: false };
@@ -29,21 +32,35 @@ async function syncAdminEmailFromEnv() {
     return { updated: false, reason: 'no_admin' };
   }
 
-  if (admin.email === email) {
+  let changed = false;
+
+  if (admin.email !== email) {
+    const conflict = await Admin.findOne({ email, _id: { $ne: admin._id } });
+    if (conflict) {
+      console.warn(
+        `[Admin] ADMIN_EMAIL ${email} belongs to another admin — skipping email sync`
+      );
+      return { updated: false, reason: 'email_conflict' };
+    }
+    admin.email = email;
+    changed = true;
+  }
+
+  if (password) {
+    const matches = await bcrypt.compare(password, admin.password);
+    if (!matches) {
+      admin.password = await bcrypt.hash(password, 10);
+      changed = true;
+      console.log('[Admin] Synced admin password from ADMIN_PASSWORD');
+    }
+  }
+
+  if (!changed) {
     return { updated: false, reason: 'already_synced' };
   }
 
-  const conflict = await Admin.findOne({ email, _id: { $ne: admin._id } });
-  if (conflict) {
-    console.warn(
-      `[Admin] ADMIN_EMAIL ${email} belongs to another admin — skipping email sync`
-    );
-    return { updated: false, reason: 'email_conflict' };
-  }
-
-  admin.email = email;
   await admin.save();
-  console.log(`[Admin] Synced admin email to ADMIN_EMAIL: ${email}`);
+  console.log(`[Admin] Synced admin account to ADMIN_EMAIL: ${email}`);
   return { updated: true, email };
 }
 
