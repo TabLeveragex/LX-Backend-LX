@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test:smtp": "node scripts/test-smtp.js",
+    "test:smtp-config": "node scripts/test-smtp-config.js"
   },
   "keywords": [],
   "author": "",

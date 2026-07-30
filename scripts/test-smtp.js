@@ -6,6 +6,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { sendEmail, verifySmtpOnStartup } = require('../Services/emailService');
+const { isDeliverableEmail } = require('../Services/adminOtpRecipientService');
 
 async function main() {
   const user = process.env.SMTP_USER;
@@ -14,9 +15,17 @@ async function main() {
     process.exit(1);
   }
 
+  console.log('SMTP_SERVICE=', process.env.SMTP_SERVICE || '(unset → gmail)');
+  console.log('SMTP_USER=', user);
+
   await verifySmtpOnStartup();
 
-  const to = process.env.ADMIN_EMAIL || user;
+  const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const to = isDeliverableEmail(adminEmail) ? adminEmail : user;
+  if (to !== adminEmail && adminEmail) {
+    console.warn(`ADMIN_EMAIL=${adminEmail} is not deliverable; sending test to SMTP_USER=${to}`);
+  }
+
   const result = await sendEmail({
     to,
     subject: 'LeverageX SMTP test',
@@ -24,7 +33,7 @@ async function main() {
   });
 
   if (result.ok) {
-    console.log('SUCCESS — test email sent to', to);
+    console.log('SUCCESS — test email sent to', to, result.messageId || '');
     process.exit(0);
   }
 

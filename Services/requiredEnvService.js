@@ -24,6 +24,23 @@ function logRequiredEnvOnStartup() {
     );
     process.exit(1);
   }
+
+  const service = String(process.env.SMTP_SERVICE || '').trim();
+  if (service) {
+    let wellKnown = null;
+    try {
+      wellKnown = require('nodemailer/lib/well-known')(service.toLowerCase());
+    } catch {
+      wellKnown = null;
+    }
+    if (!wellKnown) {
+      console.warn(
+        `[Startup] SMTP_SERVICE="${service}" is not a nodemailer well-known service. ` +
+          'Email sends will fall back to Gmail SMTP when SMTP_USER is a Gmail address. ' +
+          'Prefer SMTP_SERVICE=gmail on Render.'
+      );
+    }
+  }
 }
 
 module.exports = {

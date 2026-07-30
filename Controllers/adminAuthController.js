@@ -73,11 +73,23 @@ const adminLogin = async (req, res) => {
 
     console.log(`[AdminLogin] Sending OTP to ${otpRecipient} (admin record: ${admin.email})`);
 
-    const mailResult = await sendAdminOtpEmail({
-      email: otpRecipient,
-      fullName: admin.fullName,
-      otp,
-    });
+    let mailResult;
+    try {
+      mailResult = await sendAdminOtpEmail({
+        email: otpRecipient,
+        fullName: admin.fullName,
+        otp,
+      });
+    } catch (mailErr) {
+      console.error('[AdminLogin] OTP email threw unexpectedly:', mailErr);
+      mailResult = {
+        ok: false,
+        error: mailErr?.message || 'Unexpected email error',
+        kind: 'exception',
+        hint: 'SMTP send threw an exception. Check server logs.',
+      };
+    }
+
     if (!mailResult.ok) {
       await logAdminLoginAttempt(req, {
         loginId: normalizedLoginId,
@@ -87,12 +99,30 @@ const adminLogin = async (req, res) => {
         traderSessionWasActive: hadTraderSession,
       });
       const message =
-        mailResult.skipped
+        mailResult.skipped || mailResult.kind === 'not_configured'
           ? 'Email service is not configured. Admin login cannot continue.'
-          : 'Could not send admin login code. Check Gmail App Password on Render and redeploy.';
-      console.error('[AdminLogin] OTP email failed:', mailResult.error, mailResult.responseCode || '');
+          : mailResult.kind === 'auth'
+            ? 'Could not send admin login code: Gmail rejected SMTP credentials. Set a new App Password as SMTP_PASS and SMTP_SERVICE=gmail on Render, then redeploy.'
+            : mailResult.kind === 'misconfigured_service'
+              ? 'Could not send admin login code: SMTP_SERVICE is invalid. Set SMTP_SERVICE=gmail on Render and redeploy.'
+              : 'Could not send admin login code. Check SMTP_SERVICE=gmail and Gmail App Password on Render, then redeploy.';
+      console.error(
+        '[AdminLogin] OTP email failed for',
+        otpRecipient,
+        '—',
+        mailResult.error || 'unknown error',
+        mailResult.responseCode ? `(code ${mailResult.responseCode})` : '',
+        mailResult.kind ? `kind=${mailResult.kind}` : '',
+        mailResult.hint || ''
+      );
       return res.status(503).json({ message, success: false });
     }
+
+    console.log(
+      '[AdminLogin] OTP email sent to',
+      otpRecipient,
+      mailResult.messageId ? `messageId=${mailResult.messageId}` : ''
+    );
 
     await logAdminLoginAttempt(req, {
       loginId: normalizedLoginId,

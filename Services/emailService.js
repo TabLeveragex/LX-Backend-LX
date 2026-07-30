@@ -76,6 +76,19 @@ function getGmailTransportOptions(user, pass) {
   ];
 }
 
+function isGmailMailbox(user) {
+  return user.endsWith('@gmail.com') || user.endsWith('@googlemail.com');
+}
+
+function isGmailServiceName(service) {
+  return service === 'gmail' || service === 'google' || service === 'googlemail';
+}
+
+/**
+ * Resolve SMTP transports. Unknown SMTP_SERVICE values (e.g. product names like
+ * "LEVERAGED") are not nodemailer well-known services and cause connections to
+ * 127.0.0.1:587 — fall back to Gmail when the mailbox is Gmail.
+ */
 function getTransportOptionsList(user, pass) {
   const custom = getCustomHostTransportOptions(user, pass);
   if (custom.length) {
@@ -83,11 +96,38 @@ function getTransportOptionsList(user, pass) {
   }
 
   const service = normalizeEnvValue(process.env.SMTP_SERVICE).toLowerCase() || 'gmail';
-  if (service === 'gmail') {
+  if (isGmailServiceName(service)) {
     return getGmailTransportOptions(user, pass);
   }
 
-  return [{ service, auth: { user, pass } }];
+  let wellKnown = null;
+  try {
+    wellKnown = require('nodemailer/lib/well-known')(service);
+  } catch {
+    wellKnown = null;
+  }
+
+  if (!wellKnown) {
+    if (isGmailMailbox(user)) {
+      console.warn(
+        `[Email] SMTP_SERVICE="${service}" is not a valid nodemailer service ` +
+          `(unknown names resolve to 127.0.0.1:587). Falling back to Gmail SMTP for ${user}. ` +
+          `Set SMTP_SERVICE=gmail in .env / Render.`
+      );
+      return getGmailTransportOptions(user, pass);
+    }
+
+    console.error(
+      `[Email] SMTP_SERVICE="${service}" is not a valid nodemailer well-known service. ` +
+        `Set SMTP_SERVICE=gmail or configure SMTP_HOST / SMTP_PORT.`
+    );
+    return getGmailTransportOptions(user, pass);
+  }
+
+  return [
+    { service, auth: { user, pass } },
+    ...(isGmailMailbox(user) ? getGmailTransportOptions(user, pass) : []),
+  ];
 }
 
 function buildFromAddress() {
@@ -104,6 +144,43 @@ function buildFromAddress() {
     return smtpUser;
   }
   return fromEmail;
+}
+
+/**
+ * Map SMTP failures to a stable kind + operator-facing hint for logs/API messages.
+ */
+function classifySmtpFailure(error, responseCode) {
+  const msg = String(error?.message || error || '');
+  const code = responseCode || error?.responseCode;
+
+  if (code === 535 || /BadCredentials|Username and Password not accepted/i.test(msg)) {
+    return {
+      kind: 'auth',
+      hint:
+        'Gmail rejected SMTP_USER/SMTP_PASS. Create a new App Password at ' +
+        'https://myaccount.google.com/apppasswords (2FA required), set SMTP_PASS on Render, redeploy.',
+    };
+  }
+
+  if (/ECONNREFUSED 127\.0\.0\.1/i.test(msg)) {
+    return {
+      kind: 'misconfigured_service',
+      hint:
+        'SMTP_SERVICE is not a valid nodemailer service (unknown names hit 127.0.0.1). Set SMTP_SERVICE=gmail.',
+    };
+  }
+
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNECTION/i.test(msg)) {
+    return {
+      kind: 'network',
+      hint: 'Could not reach the SMTP host. Check SMTP_HOST / firewall / egress, or use SMTP_SERVICE=gmail.',
+    };
+  }
+
+  return {
+    kind: 'send_failed',
+    hint: 'SMTP send failed. Check server logs for the transport error and response code.',
+  };
 }
 
 async function verifyTransport(options) {
@@ -133,10 +210,15 @@ async function sendWithFallbackTransports(mailOptions) {
     }
   }
 
+  const classification = classifySmtpFailure(lastError, lastError?.responseCode);
+  console.error(`[Email] Failure kind=${classification.kind}: ${classification.hint}`);
+
   return {
     ok: false,
     error: lastError?.message || 'All SMTP transports failed',
     responseCode: lastError?.responseCode,
+    kind: classification.kind,
+    hint: classification.hint,
   };
 }
 
@@ -166,8 +248,11 @@ async function verifySmtpOnStartup() {
   }
 
   if (!verified) {
+    const service = normalizeEnvValue(process.env.SMTP_SERVICE) || '(unset → gmail)';
     console.error(
-      '[Email] Gmail SMTP could not be verified. Regenerate App Password, set SMTP_PASS on Render, then visit https://accounts.google.com/DisplayUnlockCaptcha while logged into the Gmail account.'
+      `[Email] SMTP could not be verified (SMTP_SERVICE=${service}, user=${user}). ` +
+        'Check SMTP_SERVICE=gmail, regenerate a Gmail App Password for SMTP_PASS on Render, ' +
+        'then visit https://accounts.google.com/DisplayUnlockCaptcha while logged into that Gmail account.'
     );
   }
 }
@@ -179,7 +264,13 @@ async function sendEmail({ to, subject, text, html }) {
   if (!isEmailConfigured()) {
     const msg = 'SMTP_USER / SMTP_PASS are required but not set';
     console.error('[Email]', msg);
-    return { ok: false, skipped: true, error: msg };
+    return {
+      ok: false,
+      skipped: true,
+      error: msg,
+      kind: 'not_configured',
+      hint: 'Set SMTP_USER and SMTP_PASS (Gmail App Password) on Render.',
+    };
   }
 
   const from = buildFromAddress();
@@ -187,12 +278,12 @@ async function sendEmail({ to, subject, text, html }) {
   if (!from) {
     const msg = 'SMTP_USER is missing or invalid';
     console.error('[Email]', msg);
-    return { ok: false, error: msg };
+    return { ok: false, error: msg, kind: 'not_configured', hint: msg };
   }
   if (!toAddress) {
     const msg = 'Recipient email is missing';
     console.error('[Email]', msg);
-    return { ok: false, error: msg };
+    return { ok: false, error: msg, kind: 'invalid_recipient', hint: msg };
   }
 
   const result = await sendWithFallbackTransports({
@@ -204,13 +295,21 @@ async function sendEmail({ to, subject, text, html }) {
   });
 
   if (result.ok) {
-    return { ok: true, messageId: result.messageId };
+    return { ok: true, messageId: result.messageId, transport: result.transport };
   }
+
+  console.error(
+    `[Email] All transports failed for to=${toAddress} from=${from}: ${result.error}` +
+      (result.responseCode ? ` (code ${result.responseCode})` : '') +
+      (result.hint ? ` | ${result.hint}` : '')
+  );
 
   return {
     ok: false,
     error: result.error,
     responseCode: result.responseCode,
+    kind: result.kind,
+    hint: result.hint,
   };
 }
 
@@ -270,4 +369,5 @@ module.exports = {
   sendEmail,
   sendWelcomeEmail,
   sendAdminOtpEmail,
+  classifySmtpFailure,
 };
