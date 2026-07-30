@@ -32,49 +32,44 @@ const signup = async (req, res) => {
 
         console.log('[Signup] created userId:', String(userModel._id), 'ip:', signupIp || 'unknown');
 
-        if (isLegitGmailAddress(email)) {
-            try {
-                const mailResult = await sendWelcomeEmail({ email, fullName });
-                if (!mailResult.ok) {
-                    // Keep the account — welcome mail must not roll back signup.
+        // Respond immediately so the UI always shows success.
+        // Welcome email is best-effort and must not block/hang signup (Render SMTP can stall).
+        const recipient = String(email || '').trim().toLowerCase();
+        res.status(201).json({
+            message: 'Signup successful',
+            success: true,
+            emailQueued: Boolean(recipient),
+        });
+
+        if (!recipient) {
+            return;
+        }
+
+        setImmediate(() => {
+            sendWelcomeEmail({ email: recipient, fullName })
+                .then((mailResult) => {
+                    if (mailResult.ok) {
+                        console.log(
+                            '[Signup] Welcome email sent to',
+                            recipient,
+                            mailResult.messageId ? `messageId=${mailResult.messageId}` : ''
+                        );
+                        return;
+                    }
                     console.error(
                         '[Signup] Welcome email failed for',
-                        String(email || '').trim().toLowerCase(),
+                        recipient,
                         '—',
                         mailResult.error || 'unknown error',
                         mailResult.responseCode ? `(code ${mailResult.responseCode})` : '',
                         mailResult.kind ? `kind=${mailResult.kind}` : '',
                         mailResult.hint || ''
                     );
-                    return res.status(201).json({
-                        message:
-                            'Signup successful. Welcome email could not be sent right now — you can still log in.',
-                        success: true,
-                        emailSent: false,
-                    });
-                }
-                console.log(
-                    '[Signup] Welcome email sent to',
-                    String(email || '').trim().toLowerCase(),
-                    mailResult.messageId ? `messageId=${mailResult.messageId}` : ''
-                );
-                return res.status(201).json({
-                    message: 'Signup successful',
-                    success: true,
-                    emailSent: true,
+                })
+                .catch((mailErr) => {
+                    console.error('[Signup] Welcome email threw unexpectedly:', mailErr);
                 });
-            } catch (mailErr) {
-                console.error('[Signup] Welcome email threw unexpectedly:', mailErr);
-                return res.status(201).json({
-                    message:
-                        'Signup successful. Welcome email could not be sent right now — you can still log in.',
-                    success: true,
-                    emailSent: false,
-                });
-            }
-        }
-
-        res.status(201).json({ message: 'Signup successful', success: true, emailSent: false });
+        });
     } catch (err) {
         console.error("Signup error:", err);
         if (err?.code === 11000) {

@@ -38,6 +38,12 @@ function describeTransportOptions(options) {
   return `host=${options.host} port=${options.port} secure=${options.secure}`;
 }
 
+const SMTP_TIMEOUTS = {
+  connectionTimeout: 12_000,
+  greetingTimeout: 12_000,
+  socketTimeout: 20_000,
+};
+
 function getCustomHostTransportOptions(user, pass) {
   const host = normalizeEnvValue(process.env.SMTP_HOST);
   if (!host) {
@@ -50,6 +56,7 @@ function getCustomHostTransportOptions(user, pass) {
       port: Number(process.env.SMTP_PORT || 587),
       secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
       auth: { user, pass },
+      ...SMTP_TIMEOUTS,
     },
   ];
 }
@@ -62,16 +69,19 @@ function getGmailTransportOptions(user, pass) {
       secure: false,
       requireTLS: true,
       auth: { user, pass },
+      ...SMTP_TIMEOUTS,
     },
     {
       host: 'smtp.gmail.com',
       port: 465,
       secure: true,
       auth: { user, pass },
+      ...SMTP_TIMEOUTS,
     },
     {
       service: 'gmail',
       auth: { user, pass },
+      ...SMTP_TIMEOUTS,
     },
   ];
 }
@@ -125,7 +135,7 @@ function getTransportOptionsList(user, pass) {
   }
 
   return [
-    { service, auth: { user, pass } },
+    { service, auth: { user, pass }, ...SMTP_TIMEOUTS },
     ...(isGmailMailbox(user) ? getGmailTransportOptions(user, pass) : []),
   ];
 }
