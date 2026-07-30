@@ -9,13 +9,13 @@ const {
   verifyAdminOtpChallenge,
 } = require('../Services/adminOtpService');
 const {
-  hasActiveAdminSession,
   registerAdminSession,
   clearAdminSessionById,
+  getActiveSessionLockInfo,
 } = require('../Services/adminSessionService');
 
 const ACTIVE_SESSION_MSG =
-  'Another admin is already logged in. Only one admin can use the dashboard at a time.';
+  'Another admin is already using the dashboard. Only one admin can access it at a time for up to 24 hours.';
 
 const adminLogin = async (req, res) => {
   const { loginId, password, traderSessionWasActive = false } = req.body;
@@ -51,7 +51,8 @@ const adminLogin = async (req, res) => {
       return res.status(403).json({ message: errorMsg, success: false });
     }
 
-    if (await hasActiveAdminSession()) {
+    const existingLock = await getActiveSessionLockInfo();
+    if (existingLock) {
       await logAdminLoginAttempt(req, {
         loginId: normalizedLoginId,
         success: false,
@@ -59,7 +60,13 @@ const adminLogin = async (req, res) => {
         failureReason: 'active_session',
         traderSessionWasActive: hadTraderSession,
       });
-      return res.status(409).json({ message: ACTIVE_SESSION_MSG, success: false });
+      return res.status(409).json({
+        message: existingLock.message || ACTIVE_SESSION_MSG,
+        success: false,
+        sessionLocked: true,
+        lockedUntil: existingLock.expiresAt,
+        remainingLabel: existingLock.remainingLabel,
+      });
     }
 
     const { challengeToken, otp } = await createAdminOtpChallenge(admin._id);
@@ -205,7 +212,8 @@ const adminVerifyOtp = async (req, res) => {
       return res.status(403).json({ message: 'Admin account not found.', success: false });
     }
 
-    if (await hasActiveAdminSession()) {
+    const lockAtVerify = await getActiveSessionLockInfo();
+    if (lockAtVerify) {
       await logAdminLoginAttempt(req, {
         loginId: admin.email,
         success: false,
@@ -213,7 +221,13 @@ const adminVerifyOtp = async (req, res) => {
         failureReason: 'active_session',
         traderSessionWasActive: hadTraderSession,
       });
-      return res.status(409).json({ message: ACTIVE_SESSION_MSG, success: false });
+      return res.status(409).json({
+        message: lockAtVerify.message || ACTIVE_SESSION_MSG,
+        success: false,
+        sessionLocked: true,
+        lockedUntil: lockAtVerify.expiresAt,
+        remainingLabel: lockAtVerify.remainingLabel,
+      });
     }
 
     const jwtSecret = process.env.JWT_SECRET;
@@ -225,7 +239,10 @@ const adminVerifyOtp = async (req, res) => {
       });
     }
 
-    const { sessionId } = await registerAdminSession(admin._id);
+    const { sessionId, expiresAt } = await registerAdminSession(admin._id, {
+      ip: getClientIp(req),
+      userAgent: String(req.headers['user-agent'] || ''),
+    });
 
     const jwtToken = jwt.sign(
       {
@@ -246,13 +263,15 @@ const adminVerifyOtp = async (req, res) => {
     });
 
     res.status(200).json({
-      message: 'Admin login successful',
+      message: 'Admin login successful. This dashboard seat is locked for 24 hours — no other admin can sign in until you log out or the lock expires.',
       success: true,
       jwtToken,
       adminId: admin._id,
       email: admin.email,
       username: admin.username,
       fullName: admin.fullName,
+      sessionExpiresAt: expiresAt,
+      exclusiveAccessHours: 24,
     });
   } catch (err) {
     console.error('Admin OTP verify error:', err);

@@ -30,7 +30,8 @@ async function ensureAdmin(req, res, next) {
     const sessionOk = await isAdminSessionValid(admin._id, decoded.adminSessionId);
     if (!sessionOk) {
       return res.status(401).json({
-        message: 'Admin session ended or another admin logged in.',
+        message:
+          'Admin session ended, expired, or another login took the exclusive 24-hour dashboard seat.',
         success: false,
       });
     }
