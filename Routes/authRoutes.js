@@ -6,7 +6,6 @@ const {
     adminLoginValidation,
     adminVerifyOtpValidation,
 } = require('../Middlewares/authValidation');
-const { verifyCaptcha } = require('../Middlewares/captchaValidation');
 const { signupRateLimit } = require('../Middlewares/signupRateLimit');
 const { blockListedIps } = require('../Middlewares/ipBlocklist');
 const ensureAuthenticated = require('../Middlewares/auth');
